@@ -1,7 +1,7 @@
 import pandas as pd
-from i_clean import clean_i
-from v_clean import clean_v
-from a_clean import clean_a
+from .i_clean import clean_i
+from .v_clean import clean_v
+from .a_clean import clean_a
 
 def clean_all(df : pd.DataFrame) -> pd.DataFrame:
     """
