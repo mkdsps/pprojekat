@@ -34,4 +34,4 @@ def dummy_clean(df : pd.DataFrame) -> pd.DataFrame:
 
     df_unique = df_unique.drop(columns=['group_id'])
     
-    return df
+    return df_unique
