@@ -17,6 +17,7 @@ def features_a(df: pd.DataFrame) -> pd.DataFrame:
         labels=["18-24", "25-30", "31-40", "41-50", "51-60", "61-70", "71-80", "81-90", "90+"]
     )
     df.drop(columns=["driver_age"], inplace=True, errors="ignore")
+    df = add_dependency_features(df)
     price_cols = [col for col in df.columns if col.endswith('_price')]
 
 # Primeni funkciju
@@ -253,3 +254,19 @@ def add_vehicle_score_selected_insurers(df: pd.DataFrame, selected_prices=None) 
     )
 
     return df
+
+
+def add_dependency_features(data):
+    coverage_map = {'mtpl': 1, 'limited_casco': 2, 'casco': 3}
+    data['coverage_num'] = data['coverage'].map(coverage_map)
+    
+    auto_dep_map = {1: 0.2, 2: 0.6, 3: 0.9}
+    data['auto_dependency'] = data['coverage_num'].map(auto_dep_map)
+    
+    urban_dep_map = {1: 0.1, 2: 0.5, 3: 0.8}
+    data['urban_dependency'] = data['coverage_num'].map(urban_dep_map)
+    
+    data['auto_dependency'] = data['auto_dependency'].fillna(data['auto_dependency'].median())
+    data['urban_dependency'] = data['urban_dependency'].fillna(data['urban_dependency'].median())
+    
+    return data
