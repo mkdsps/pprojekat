@@ -6,8 +6,17 @@ def features_a(df: pd.DataFrame) -> pd.DataFrame:
     df = drop_all_null_columns(df)
     df = drop_almost_constant_columns(df, threshold=0.99)
     df = create_urban_risk_score(df)
+    df = add_vehicle_score_selected_insurers(df)
     df['log_vehicle_value_new'] = np.log1p(df['vehicle_value_new'])
-
+    df["driver_age"] = (
+        2026 - pd.to_datetime(df["contractor_birthdate"], dayfirst=True, errors="coerce").dt.year
+    ).astype("Int64")
+    df["driver_age_band"] = pd.cut(
+        df["driver_age"],
+        bins=[17, 24, 30, 40, 50, 60, 70, 80, 90, 120],
+        labels=["18-24", "25-30", "31-40", "41-50", "51-60", "61-70", "71-80", "81-90", "90+"]
+    )
+    df.drop(columns=["driver_age"], inplace=True, errors="ignore")
     price_cols = [col for col in df.columns if col.endswith('_price')]
 
 # Primeni funkciju
@@ -172,3 +181,75 @@ def create_urban_risk_score(data):
     
     print("✅ Kreiran: urban_amenities_score")
     return data
+
+
+def add_vehicle_score_selected_insurers(df: pd.DataFrame, selected_prices=None) -> pd.DataFrame:
+    df = df.copy()
+
+    vehicle_features = [
+        "vehicle_ownership_duration",
+        "vehicle_engine_size",
+        "vehicle_power",
+        "vehicle_net_weight",
+        "vehicle_gross_weight",
+        "vehicle_length",
+        "vehicle_width",
+        "vehicle_height",
+        "vehicle_number_of_cylinders",
+        "vehicle_number_of_doors",
+        "vehicle_number_of_seats",
+        "vehicle_value_new",
+        "vehicle_net_max_power",
+        "vehicle_net_max_power_electric",
+        "vehicle_nominal_continuous_max_power",
+        "vehicle_power_to_net_weight_ratio",
+        "vehicle_age",
+        "vehicle_years_since_country_first_registration",
+        "vehicle_odometer_verdict_code",
+        "vehicle_planned_annual_mileage",
+    ]
+
+    if selected_prices is None:
+        selected_prices = [
+            "Insurer_C_price",
+            "Insurer_H_price",
+            "Insurer_G_price",
+            "Insurer_J_price",
+        ]
+
+    selected_prices = [c for c in selected_prices if c in df.columns]
+    existing_features = [c for c in vehicle_features if c in df.columns]
+
+    corr_matrix = df[existing_features + selected_prices].corr(numeric_only=True).loc[existing_features, selected_prices]
+    feature_weights = corr_matrix.mean(axis=1)
+
+    z = pd.DataFrame(index=df.index)
+    for col in existing_features:
+        s = pd.to_numeric(df[col], errors="coerce")
+        std = s.std()
+        if pd.notna(std) and std != 0:
+            z[col] = (s - s.mean()) / std
+        else:
+            z[col] = 0.0
+
+    raw_score = pd.Series(0.0, index=df.index)
+    for col in existing_features:
+        raw_score = raw_score + z[col].fillna(0) * feature_weights[col]
+
+    min_val = raw_score.min()
+    max_val = raw_score.max()
+
+    if pd.notna(max_val) and pd.notna(min_val) and max_val != min_val:
+        df["vehicle_score"] = (raw_score - min_val) / (max_val - min_val)
+    else:
+        df["vehicle_score"] = 0.5
+
+    weight_table = (
+        feature_weights
+        .sort_values(key=lambda s: s.abs(), ascending=False)
+        .rename("weight")
+        .reset_index()
+        .rename(columns={"index": "feature"})
+    )
+
+    return df
