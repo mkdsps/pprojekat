@@ -7,7 +7,7 @@ def features_a(df: pd.DataFrame) -> pd.DataFrame:
     df = drop_almost_constant_columns(df, threshold=0.99)
     df = create_urban_risk_score(df)
     df = add_vehicle_score_selected_insurers(df)
-    df['log_vehicle_value_new'] = np.log1p(df['vehicle_value_new'])
+    df['log_vehicle_value_new'] = np.log1p(pd.to_numeric(df['vehicle_value_new'], errors='coerce').fillna(0))
     df["driver_age"] = (
         2026 - pd.to_datetime(df["contractor_birthdate"], dayfirst=True, errors="coerce").dt.year
     ).astype("Int64")
@@ -153,8 +153,10 @@ def remove_high_correlation_features(data, threshold=0.95, keep_targets=None, ve
 
 def create_urban_risk_score(data):
     """
-    Kreira risk score koji kombinuje pozitivne i negativne feature-e
+    Kreira risk score koji kombinuje pozitivne i negativne feature-e.
+    Popravljeno da radi sa stringovima i izbegava deljenje nulom.
     """
+    data = data.copy()
     
     positive_features = [
         'postal_code_department_stores_within_10_km',
@@ -166,18 +168,32 @@ def create_urban_risk_score(data):
         'postal_code_urban_category'
     ]
     
-    data['urban_amenities_score'] = 0
-    for feat in positive_features:
-        if feat in data.columns:
-            norm = (data[feat] - data[feat].min()) / (data[feat].max() - data[feat].min())
-            data['urban_amenities_score'] += norm
+    data['urban_amenities_score'] = 0.0
+    valid_features_count = 0
+
+    all_features = positive_features + negative_features
     
-    for feat in negative_features:
+    for feat in all_features:
         if feat in data.columns:
-            norm = 1 - (data[feat] - data[feat].min()) / (data[feat].max() - data[feat].min())
-            data['urban_amenities_score'] += norm
+            # KLJUČNI FIX: Konverzija u broj. Ako je string, postaće broj ili NaN
+            col_numeric = pd.to_numeric(data[feat], errors='coerce').fillna(0)
+            
+            f_min = col_numeric.min()
+            f_max = col_numeric.max()
+            
+            # Provera da se izbegne deljenje nulom
+            if f_max - f_min > 0:
+                if feat in positive_features:
+                    norm = (col_numeric - f_min) / (f_max - f_min)
+                else:
+                    norm = 1 - (col_numeric - f_min) / (f_max - f_min)
+                
+                data['urban_amenities_score'] += norm
+                valid_features_count += 1
     
-    data['urban_amenities_score'] = data['urban_amenities_score'] / (len(positive_features) + len(negative_features))
+    # Prosek svih skorova
+    if valid_features_count > 0:
+        data['urban_amenities_score'] /= valid_features_count
     
     print("✅ Kreiran: urban_amenities_score")
     return data
@@ -187,69 +203,59 @@ def add_vehicle_score_selected_insurers(df: pd.DataFrame, selected_prices=None) 
     df = df.copy()
 
     vehicle_features = [
-        "vehicle_ownership_duration",
-        "vehicle_engine_size",
-        "vehicle_power",
-        "vehicle_net_weight",
-        "vehicle_gross_weight",
-        "vehicle_length",
-        "vehicle_width",
-        "vehicle_height",
-        "vehicle_number_of_cylinders",
-        "vehicle_number_of_doors",
-        "vehicle_number_of_seats",
-        "vehicle_value_new",
-        "vehicle_net_max_power",
-        "vehicle_net_max_power_electric",
-        "vehicle_nominal_continuous_max_power",
-        "vehicle_power_to_net_weight_ratio",
-        "vehicle_age",
+        "vehicle_ownership_duration", "vehicle_engine_size", "vehicle_power",
+        "vehicle_net_weight", "vehicle_gross_weight", "vehicle_length",
+        "vehicle_width", "vehicle_height", "vehicle_number_of_cylinders",
+        "vehicle_number_of_doors", "vehicle_number_of_seats",
+        "vehicle_value_new", "vehicle_net_max_power",
+        "vehicle_net_max_power_electric", "vehicle_nominal_continuous_max_power",
+        "vehicle_power_to_net_weight_ratio", "vehicle_age",
         "vehicle_years_since_country_first_registration",
-        "vehicle_odometer_verdict_code",
-        "vehicle_planned_annual_mileage",
+        "vehicle_odometer_verdict_code", "vehicle_planned_annual_mileage",
     ]
 
     if selected_prices is None:
-        selected_prices = [
-            "Insurer_C_price",
-            "Insurer_H_price",
-            "Insurer_G_price",
-            "Insurer_J_price",
-        ]
+        selected_prices = ["Insurer_C_price", "Insurer_H_price", "Insurer_G_price", "Insurer_J_price"]
 
-    selected_prices = [c for c in selected_prices if c in df.columns]
+    # 1. Filtriraj samo ono što stvarno postoji u tabeli
     existing_features = [c for c in vehicle_features if c in df.columns]
+    existing_prices = [c for c in selected_prices if c in df.columns]
 
-    corr_matrix = df[existing_features + selected_prices].corr(numeric_only=True).loc[existing_features, selected_prices]
-    feature_weights = corr_matrix.mean(axis=1)
+    if not existing_features or not existing_prices:
+        df["vehicle_score"] = 0.5
+        return df
 
+    # 2. KLJUČNI FIX: Pretvori kolone u numerički tip pre korelacije
+    # Kreiramo privremeni DF samo za proračun tegova
+    temp_corr_df = df[existing_features + existing_prices].copy()
+    for col in temp_corr_df.columns:
+        temp_corr_df[col] = pd.to_numeric(temp_corr_df[col], errors='coerce').fillna(0)
+
+    # 3. Sad računaj korelaciju - numeric_only više nije problem jer smo ih pretvorili
+    corr_matrix = temp_corr_df.corr().loc[existing_features, existing_prices]
+    
+    # Izračunaj težine (mean korelacije sa izabranim osiguravačima)
+    feature_weights = corr_matrix.mean(axis=1).fillna(0)
+
+    # 4. Izračunaj Z-score na originalnom DF-u (uz konverziju u float)
     z = pd.DataFrame(index=df.index)
     for col in existing_features:
-        s = pd.to_numeric(df[col], errors="coerce")
+        s = pd.to_numeric(df[col], errors="coerce").astype(float)
         std = s.std()
         if pd.notna(std) and std != 0:
             z[col] = (s - s.mean()) / std
         else:
             z[col] = 0.0
 
-    raw_score = pd.Series(0.0, index=df.index)
-    for col in existing_features:
-        raw_score = raw_score + z[col].fillna(0) * feature_weights[col]
+    # Pomnoži z-score sa težinama
+    raw_score = (z[existing_features] * feature_weights).sum(axis=1)
 
-    min_val = raw_score.min()
-    max_val = raw_score.max()
-
-    if pd.notna(max_val) and pd.notna(min_val) and max_val != min_val:
+    # 5. Normalizacija finalnog skora na 0-1
+    min_val, max_val = raw_score.min(), raw_score.max()
+    if pd.notna(max_val) and max_val != min_val:
         df["vehicle_score"] = (raw_score - min_val) / (max_val - min_val)
     else:
         df["vehicle_score"] = 0.5
 
-    weight_table = (
-        feature_weights
-        .sort_values(key=lambda s: s.abs(), ascending=False)
-        .rename("weight")
-        .reset_index()
-        .rename(columns={"index": "feature"})
-    )
-
+    print("✅ Kreiran: vehicle_score")
     return df
