@@ -5,6 +5,8 @@ def features_a(df: pd.DataFrame) -> pd.DataFrame:
 
     df = drop_all_null_columns(df)
     df = drop_almost_constant_columns(df, threshold=0.99)
+    df = create_urban_risk_score(df)
+    df['log_vehicle_value_new'] = np.log1p(df['vehicle_value_new'])
 
     price_cols = [col for col in df.columns if col.endswith('_price')]
 
@@ -137,3 +139,36 @@ def remove_high_correlation_features(data, threshold=0.95, keep_targets=None, ve
             print("\n✅ Nema kolona za izbacivanje (sve korelacije ispod praga)")
     
     return data_clean, removed_cols
+
+
+
+def create_urban_risk_score(data):
+    """
+    Kreira risk score koji kombinuje pozitivne i negativne feature-e
+    """
+    
+    positive_features = [
+        'postal_code_department_stores_within_10_km',
+        'postal_code_primary_schools_within_3_km',
+        'postal_code_supermarkets_within_3_km'
+    ]
+    
+    negative_features = [
+        'postal_code_urban_category'
+    ]
+    
+    data['urban_amenities_score'] = 0
+    for feat in positive_features:
+        if feat in data.columns:
+            norm = (data[feat] - data[feat].min()) / (data[feat].max() - data[feat].min())
+            data['urban_amenities_score'] += norm
+    
+    for feat in negative_features:
+        if feat in data.columns:
+            norm = 1 - (data[feat] - data[feat].min()) / (data[feat].max() - data[feat].min())
+            data['urban_amenities_score'] += norm
+    
+    data['urban_amenities_score'] = data['urban_amenities_score'] / (len(positive_features) + len(negative_features))
+    
+    print("✅ Kreiran: urban_amenities_score")
+    return data
